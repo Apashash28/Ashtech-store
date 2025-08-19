@@ -1,0 +1,57 @@
+<?php
+// verifier_paiements.php - Vérifie les paiements en attente auprès de Money Fusion
+
+try {
+     $pdo = new PDO("mysql:host=sql106.iceiy.com;dbname=icei_39016282_digitek_empire;charset=utf8mb4", "icei_39016282", "yVsf9qzAw1ag");
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+    // Récupère toutes les ventes avec statut "en_attente"
+    $stmt = $pdo->query("SELECT id, tokenPay FROM ventes WHERE statut = 'en_attente'");
+    $ventes = $stmt->fetchAll();
+
+    if (!$ventes) {
+        echo "Aucune vente en attente à vérifier.";
+        exit;
+    }
+
+    foreach ($ventes as $vente) {
+        $token = $vente['tokenPay'];
+
+        // Appelle l'API Money Fusion pour ce token
+        $url = "https://www.pay.moneyfusion.net/api/v1/check-pay/$token";
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        $reponse = curl_exec($ch);
+        curl_close($ch);
+
+        $data = json_decode($reponse, true);
+
+        // Analyse la réponse
+        if (isset($data['status'])) {
+            $status_api = strtolower(trim($data['status']));
+            $status_api = iconv('UTF-8', 'UTF-8//IGNORE', $status_api);
+
+            $statut = match ($status_api) {
+                'payé', 'payÃ©', 'pay�', 'paid' => 'paid',
+                'annulé', 'cancelled', 'canceled' => 'cancelled',
+                'en_attente', 'pending' => 'en_attente',
+                default => 'en_attente'
+            };
+
+            if ($statut === 'paid') {
+                // Mise à jour dans la base
+                $update = $pdo->prepare("UPDATE ventes SET statut = ? WHERE id = ?");
+                $update->execute([$statut, $vente['id']]);
+
+                echo "✅ Vente ID {$vente['id']} mise à jour en '$statut'\n";
+            } else {
+                echo "⏳ Vente ID {$vente['id']} toujours en attente ({$statut})\n";
+            }
+        } else {
+            echo "❌ Erreur API pour token: $token\n";
+        }
+    }
+} catch (Exception $e) {
+    echo "❌ Erreur: " . $e->getMessage();
+}
+?>
